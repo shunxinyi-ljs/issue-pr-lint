@@ -36,7 +36,3 @@ cp issue-pr-lint/SKILL.md ~/.claude/skills/issue-pr-lint/
 或直接 `/issue-pr-lint`。
 
 适用于文案已写完、准备发布的时点。调查、复现、改代码阶段不适用。
-
----
-
-> 仓库名为 `issue-pr-link`，skill 名为 `issue-pr-lint`（l**i**nt）。文件与目录统一使用 `issue-pr-lint`。
