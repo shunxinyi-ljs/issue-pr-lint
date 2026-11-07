@@ -1,6 +1,6 @@
 ---
 name: "issue-pr-lint"
-description: "Audits an already-written GitHub issue/PR before submission: verifies every claim against diff and test output, aligns structure to repo templates, cuts noise. Invoke as the final step before posting an issue or opening a PR. Do NOT invoke while the user is still investigating, reproducing, or fixing the problem, or when no draft text exists yet."
+description: "Audits an already-written GitHub issue/PR draft before submission: verifies every claim against diff and test output, aligns structure to repo templates, cuts noise. Invoke ONLY after a draft body exists (改动已 commit + 验证已跑 + 正文草稿已写). Do NOT invoke to decide which of several candidate changes is worth submitting, to check progress, or to generate copy from scratch — those are not this skill's job."
 ---
 
 # Issue / PR 提交前审查
@@ -10,6 +10,18 @@ description: "Audits an already-written GitHub issue/PR before submission: verif
 这个 skill 是交付前的**审查与改写**，不是文案生成器。触发时用户已经完成定位、修复和验证，文案也已写完或写完草稿。你的任务是：核对事实 → 对齐结构 → 做减法 → 输出终稿和待确认清单。
 
 如果用户还没完成工作（只有想法、还没定位、还没验证），直接说明不适用，回到正常工作流。
+
+## 何时调用
+
+**草稿正文写完之后、提交之前。** 输入是「已完成的改动 + 已写好的文案」，输出是「终稿 + 待确认清单」。
+
+调用前必须同时满足：
+
+1. 改动已经 commit（或至少 `git diff` 可见）
+2. 验证已经跑过，有命令输出
+3. **草稿正文已经写出**（哪怕是粗糙的初稿）
+
+三条缺任意一条，说明不适用，回到正常工作流。
 
 三种输入形态，按实际情况选取核查项：
 
@@ -70,7 +82,13 @@ description: "Audits an already-written GitHub issue/PR before submission: verif
 **2. 修复是否真的针对该问题（PR 侧）**
 
 - 可机械核对的部分：diff 是否触及文案声称的根因位置；新增测试是否覆盖改动的分支；是否夹带无关文件（lock、格式化、重命名、无关重构）。
-- 测试有效性：优先建议做一次反向验证（临时撤下修复，确认测试转为失败，再恢复）。必须经用户确认后才执行。约束：不得产生新 commit、不得推送；优先用非破坏手段（`git stash push -u`、反向应用补丁、临时 worktree），不使用 `git reset --hard`、`git checkout .` 这类会丢改动的命令；验证后必须恢复，并用 `git status --short` 确认与开始时一致。用户不同意就跳过，记为"未做反向验证"。无法执行时，读测试代码判断断言是否覆盖失败路径；判断不了就写"测试有效性未被证明"。
+- 测试有效性：**必须**做一次反向验证（临时撤下修复，确认测试转为失败，再恢复）。这是唯一能证明"测试真的覆盖了修复"的手段，跳过它等于放弃验证。只有用户明确拒绝时才跳过，并记为"未做反向验证"。
+  - 执行约束：不得产生新 commit、不得推送；优先用非破坏手段（临时 worktree 复制测试文件到未修复代码上、反向应用补丁、`git stash push -u -m "<唯一标签>"`），不使用 `git reset --hard`、`git checkout .` 这类会丢改动的命令；验证后必须恢复，并用 `git status --short` 确认与开始时一致。
+  - **必须区分两类用例**：反向验证后，把新增用例分成「在未修复代码上失败」和「在未修复代码上仍然通过」两组。
+    - 前者才是**修复验证**，计入证据，写进 PR 正文的变异验证一栏。
+    - 后者是**护栏用例**（反向用例、边界用例、其他方言/其他路径的覆盖），本来就不该在未修复代码上失败，不能计入"测试证明了修复有效"的证据。
+    - 常见陷阱：8 个新用例里只有 4 个真正验证修复，另外 4 个是 fake-cursor 或其他路径的护栏。若在正文里笼统写"新增 8 个用例全部通过"，维护者会误以为 8 个都是端到端验证。
+  - 无法执行反向验证时（如依赖外部服务不可达），读测试代码判断断言是否覆盖失败路径；判断不了就写"测试有效性未被证明"，不得含糊表述为"已测试"。
 - 需人判断的部分（根因是否唯一、边界条件、是否权宜之计）：不下结论，只写"现有证据支持到哪一步、还缺什么"。
 - 声明范围与实际范围：文案写"只改 X"，用 `git diff --name-only` 对；不一致就要求改写或拆分。
 
@@ -91,6 +109,25 @@ description: "Audits an already-written GitHub issue/PR before submission: verif
 做法：`grep -rn "<新取值>\|<旧取值>" <相关目录>`，对每处命中判断"新值会不会落进未覆盖的分支"。
 
 **这一步的典型陷阱**：只看离改动最近的那张映射表就下结论。同一个值往往有两张表——一张管字段内联提示、一张管结果展示，只查一张会得出"下游没处理"的错误结论。
+
+**3c. 改动的代码路径当前是否可达（必查）**
+
+改动的逻辑再正确，如果它所在的路径在生产中被关闭，文案就不能声称"修复了线上问题"。必须先确认可达性，再决定措辞。
+
+做法：搜索 feature flag、开关、环境变量、编译期常量，确认改动所在分支当前是否被执行：
+
+```bash
+grep -rn "ENABLED\|FEATURE_\|_FLAG\|if False" <改动所在模块>
+grep -rn "<改动所在的方言/后端/模式名>" <配置与入口文件>
+```
+
+判断与措辞：
+
+- **可达**（走默认路径）→ 可以写"修复了 X 问题"。
+- **不可达**（被开关关闭、后端未启用、平台分支不生效）→ 正文**必须主动说明**"当前不可达，为将来启用做准备"。这既诚实，也避免维护者认为作者不了解现状。
+- **不确定** → 列入待确认清单，不得默认可达。
+
+**这一步的价值**：维护者判断作者是否做过功课，第一眼看的就是这里。声称修复了一个被开关关闭的路径上的 bug，会直接损失可信度；主动说明反而加分。
 
 **4. issue 诉求逐条回应（仅 C 型）**
 
@@ -164,6 +201,8 @@ description: "Audits an already-written GitHub issue/PR before submission: verif
 - 终稿中每个陈述句都能指回证据，或已降级为推测/待确认。
 - **每条被降级的断言，报告里能说清取证动作**（搜了什么、读了哪个文件）——只说"没证据"而不说"找过什么"不算通过。
 - **改动涉及错误码/状态值/默认值时，已列出该值的下游引用并逐条确认**（第三步 3b）。
+- **已确认改动所在路径当前是否可达；不可达时正文已主动说明**（第三步 3c）。
+- **已做反向验证，并区分了「修复验证」与「护栏用例」两类新增测试**（第三步第 2 项）；未做时已写明原因。
 - 结构符合仓库模板；无模板时符合最小集。
 - 无过程噪声、无空话、无逐文件 diff 复述。
 - 待确认清单里的每一条，用户都能直接判断"补还是不补"。
